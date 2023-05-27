@@ -108,7 +108,7 @@ parser.add_argument('--optim', default='sgd', type=str, metavar='OPTIMIZER',
                     help='Optimizer (default: "sgd"')
 parser.add_argument('--base_optim', default='sgd', type=str, metavar='OPTIMIZER',
                     help='Optimizer (default: "sgd"')
-parser.add_argument('--opt-eps', default=None, type=float, metavar='EPSILON',
+parser.add_argument('--opt-eps', default=1e-8, type=float, metavar='EPSILON',
                     help='Optimizer Epsilon (default: None, use opt default)')
 parser.add_argument('--opt-betas', default=None, type=float, nargs='+', metavar='BETA',
                     help='Optimizer Betas (default: None, use opt default)')
@@ -249,7 +249,7 @@ parser.add_argument('--experiment', default='', type=str, metavar='NAME',
                     help='name of train experiment, name of sub-folder for output')
 parser.add_argument('--eval-metric', default='top1', type=str, metavar='EVAL_METRIC',
                     help='Best metric (default: "top1"')
-parser.add_argument('--log-wandb', action='store_true', default=False,
+parser.add_argument('--log_wandb', action='store_true', default=False,
                     help='log training and validation metrics to wandb')
 parser.add_argument('--project-name', default='YOUR_WANDB_PPOJECT_NAME', type=str,
                     help='set wandb project name')
@@ -281,6 +281,11 @@ def _parse_args():
     if 'None' in args.ignore_module_name:
         args.ignore_module_name = []
 
+    if args.num_classes == -1:
+        if args.dataset == 'CIFAR10':
+            args.num_classes = 10
+        if args.dataset == 'CIFAR100':
+            args.num_classes = 100
     return args, args_text
 
 
@@ -334,7 +339,9 @@ def main():
 
     if args.log_wandb and args.rank == 0:
         if has_wandb:
-            wandb.init(project=args.project_name, name=args.experiment, group=args.group_name, config=args)
+            wandb.init(entity=os.environ.get('WANDB_ENTITY', None),
+                    project=os.environ.get('WANDB_PROJECT', None), 
+                    config=args)
         else:
             _logger.warning("You've requested to log metrics to wandb but package not found. "
                             "Metrics not being logged to wandb, try `pip install wandb`")
@@ -659,7 +666,10 @@ def train_one_epoch(
                         data_time=data_time_m))
 
                 if args.log_wandb:
-                    wandb.log({'iter': num_updates, 'lr': lr})
+                    wandb.log({'iter': num_updates, 
+                               'lr': lr,
+                               'train_loss_val':losses_m.val,
+                               'train_loss_avg':losses_m.avg})
 
                 if args.save_images and output_dir:
                     torchvision.utils.save_image(

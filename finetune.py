@@ -34,6 +34,8 @@ from data.loader import create_loader
 from models.factory import create_model, safe_model_name
 from scheduler.scheduler_factory import create_scheduler
 from utils.summary import original_update_summary
+import asdl
+from asdl.create_gradmaker import *
 
 try:
     from apex import amp
@@ -62,9 +64,9 @@ _logger = logging.getLogger('train')
 parser = argparse.ArgumentParser(description='FineTuning')
 
 # Dataset / Model parameters
-parser.add_argument('data_dir', metavar='DIR',
+parser.add_argument('--data_dir', metavar='DIR', default='./dataset/cifar10',
                     help='path to dataset')
-parser.add_argument('--dataset', '-d', metavar='NAME', default='',
+parser.add_argument('--dataset', '-d', metavar='NAME', default='CIFAR10',
                     help='dataset type (default: ImageFolder/ImageTar if empty)')
 parser.add_argument('--train-split', metavar='NAME', default='train',
                     help='dataset train split (default: train)')
@@ -72,9 +74,9 @@ parser.add_argument('--val-split', metavar='NAME', default='validation',
                     help='dataset validation split (default: validation)')
 parser.add_argument('--model', default='deit_tiny_patch16_224', type=str, metavar='MODEL',
                     help='Name of model to train (default: deit_tiny_patch16_224)')
-parser.add_argument('--pretrained', action='store_true', default=False,
+parser.add_argument('--pretrained', action='store_true', default=True,
                     help='Start with pretrained version of specified network (if avail)')
-parser.add_argument('--pretrained-path', default='', type=str, metavar='PATH',
+parser.add_argument('--pretrained-path', default='./pretrained/exfractal_21k_tiny.pth.tar', type=str, metavar='PATH',
                     help='Load model from local pretrained checkpoint')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='Resume full model and optimizer state from checkpoint (default: none)')
@@ -84,8 +86,8 @@ parser.add_argument('--num-classes', type=int, default=None, metavar='N',
                     help='number of label classes (Model default if None)')
 parser.add_argument('--img-size', type=int, default=None, metavar='N',
                     help='Image patch size (default: None => model default)')
-parser.add_argument('--input-size', default=None, nargs=3, type=int, metavar='N N N', 
-                    help='Input all image dimensions (d h w, e.g. --input-size 3 224 224), uses model default if empty')
+parser.add_argument('--input-size', default=[3,224,224], nargs=3, type=int, metavar='N N N', 
+                    help='Input all image dimensions (d h w, e.g. --input-size 3 224 224), uses model default if empty',)
 parser.add_argument('--crop-pct', default=None, type=float, metavar='N', 
                     help='Input image center crop percent (for validation only)')
 parser.add_argument('--mean', type=float, nargs='+', default=None, metavar='MEAN',
@@ -94,13 +96,15 @@ parser.add_argument('--std', type=float, nargs='+', default=None, metavar='STD',
                     help='Override std deviation of of dataset')
 parser.add_argument('--interpolation', default='', type=str, metavar='NAME',
                     help='Image resize interpolation type (overrides model)')
-parser.add_argument('-b', '--batch-size', type=int, default=32, metavar='N',
+parser.add_argument('-b', '--batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 32)')
 parser.add_argument('-vb', '--validation-batch-size-multiplier', type=int, default=1, metavar='N',
                     help='ratio of validation batch size to training batch size (default: 1)')
 
 # Optimizer parameters
-parser.add_argument('--opt', default='sgd', type=str, metavar='OPTIMIZER',
+parser.add_argument('--optim', default='sgd', type=str, metavar='OPTIMIZER',
+                    help='Optimizer (default: "sgd"')
+parser.add_argument('--base_optim', default='sgd', type=str, metavar='OPTIMIZER',
                     help='Optimizer (default: "sgd"')
 parser.add_argument('--opt-eps', default=None, type=float, metavar='EPSILON',
                     help='Optimizer Epsilon (default: None, use opt default)')
@@ -108,7 +112,7 @@ parser.add_argument('--opt-betas', default=None, type=float, nargs='+', metavar=
                     help='Optimizer Betas (default: None, use opt default)')
 parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
                     help='Optimizer momentum (default: 0.9)')
-parser.add_argument('--weight-decay', type=float, default=0.0001,
+parser.add_argument('--weight-decay', type=float, default=0.01,
                     help='weight decay (default: 0.0001)')
 parser.add_argument('--clip-grad', type=float, default=None, metavar='NORM',
                     help='Clip gradient norm (default: None, no clipping)')
@@ -116,10 +120,10 @@ parser.add_argument('--clip-mode', type=str, default='norm',
                     help='Gradient clipping mode. One of ("norm", "value", "agc")')
 
 # Learning rate schedule parameters
-parser.add_argument('--sched', default='step', type=str, metavar='SCHEDULER',
-                    help='LR scheduler (default: "step"')
-parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
-                    help='learning rate (default: 0.01)')
+parser.add_argument('--sched', default='cosine_iter', type=str, metavar='SCHEDULER',
+                    help='LR scheduler (default: "step"',)
+parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
+                    help='learning rate (default: 0.001)')
 parser.add_argument('--lr-noise', type=float, nargs='+', default=None, metavar='pct, pct',
                     help='learning rate noise on/off epoch percentages')
 parser.add_argument('--lr-noise-pct', type=float, default=0.67, metavar='PERCENT',
@@ -142,7 +146,7 @@ parser.add_argument('--start-epoch', default=None, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
 parser.add_argument('--decay-epochs', type=float, default=30, metavar='N',
                     help='epoch interval to decay LR')
-parser.add_argument('--warmup-epochs', type=int, default=3, metavar='N',
+parser.add_argument('--warmup-epochs', type=int, default=5, metavar='N',
                     help='epochs to warmup LR, if scheduler supports')
 parser.add_argument('--warmup-iter', type=int, default=0, metavar='N',
                     help='iter to warmup LR, if scheduler supports')
@@ -166,13 +170,13 @@ parser.add_argument('--vflip', type=float, default=0.,
                     help='Vertical flip training aug probability')
 parser.add_argument('--color-jitter', type=float, default=0.4, metavar='PCT',
                     help='Color jitter factor (default: 0.4)')
-parser.add_argument('--aa', type=str, default=None, metavar='NAME',
+parser.add_argument('--aa', type=str, default='rand-m9-mstd0.5-inc1', metavar='NAME',
                     help='Use AutoAugment policy. "v0" or "original". (default: None)'),
 parser.add_argument('--aug-splits', type=int, default=0,
                     help='Number of augmentation splits (default: 0, valid: 0 or >=2)')
 parser.add_argument('--jsd', action='store_true', default=False,
                     help='Enable Jensen-Shannon Divergence + CE loss. Use with `--aug-splits`.')
-parser.add_argument('--reprob', type=float, default=0., metavar='PCT',
+parser.add_argument('--reprob', type=float, default=0.25, metavar='PCT',
                     help='Random erase prob (default: 0.)')
 parser.add_argument('--remode', type=str, default='const',
                     help='Random erase mode (default: "const")')
@@ -180,9 +184,9 @@ parser.add_argument('--recount', type=int, default=1,
                     help='Random erase count (default: 1)')
 parser.add_argument('--resplit', action='store_true', default=False,
                     help='Do not random erase first (clean) augmentation split')
-parser.add_argument('--mixup', type=float, default=0.0,
+parser.add_argument('--mixup', type=float, default=0.8,
                     help='mixup alpha, mixup enabled if > 0. (default: 0.)')
-parser.add_argument('--cutmix', type=float, default=0.0,
+parser.add_argument('--cutmix', type=float, default=1.0,
                     help='cutmix alpha, cutmix enabled if > 0. (default: 0.)')
 parser.add_argument('--cutmix-minmax', type=float, nargs='+', default=None,
                     help='cutmix min/max ratio, overrides alpha and enables cutmix if set (default: None)')
@@ -202,12 +206,13 @@ parser.add_argument('--drop', type=float, default=0.0, metavar='PCT',
                     help='Dropout rate (default: 0.)')
 parser.add_argument('--drop-connect', type=float, default=None, metavar='PCT',
                     help='Drop connect rate, DEPRECATED, use drop-path (default: None)')
-parser.add_argument('--drop-path', type=float, default=None, metavar='PCT',
+parser.add_argument('--drop-path', type=float, default=0.1, metavar='PCT',
                     help='Drop path rate (default: None)')
 parser.add_argument('--drop-block', type=float, default=None, metavar='PCT',
                     help='Drop block rate (default: None)')
-parser.add_argument('--repeated-aug', action='store_true',
-                    help='Use repeated augmentation')
+parser.add_argument('--repeated-aug', action='store_false',
+                    help='Use repeated augmentation',
+                    default=True)
 
 # Misc
 parser.add_argument('--seed', type=int, default=42, metavar='S',
@@ -236,7 +241,7 @@ parser.add_argument('--pin-mem', action='store_true', default=False,
                     help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
 parser.add_argument('--no-prefetcher', action='store_true', default=False,
                     help='disable fast prefetcher')
-parser.add_argument('--output', default='', type=str, metavar='PATH',
+parser.add_argument('--output', default='./output/cifar10', type=str, metavar='PATH',
                     help='path to output folder (default: none, current dir)')
 parser.add_argument('--experiment', default='', type=str, metavar='NAME',
                     help='name of train experiment, name of sub-folder for output')
@@ -249,12 +254,31 @@ parser.add_argument('--project-name', default='YOUR_WANDB_PPOJECT_NAME', type=st
 parser.add_argument('--group-name', default='YOUR_WANDB_GROUP_NAME', type=str,
                     help='set wandb group name')
 
+parser.add_argument('--damping', type=float, default=1e-3)
+parser.add_argument('--ema_decay', type=float, default=1,
+                        help='ema_decay')
+parser.add_argument('--curvature_update_interval', type=int, default=10)
+parser.add_argument('--precond_module_name', type=str, default='None',
+                        help='precond_module_name')
+parser.add_argument('--ignore_module_name', type=str, default='None',
+                        help='precond_module_name')
+parser.add_argument('--zero_initialization', action='store_true', default=False)
 
 def _parse_args():
     args = parser.parse_args()
 
     # Cache the args as a text string to save them in the output dir later
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
+    args.precond_module_name = args.precond_module_name.split(',')
+    args.ignore_module_name = args.ignore_module_name.split(',')
+    if 'None' in args.precond_module_name:
+        args.precond_module_name = None
+    elif 'AllSGD' in args.precond_module_name:
+        args.optim = 'sgd'
+        args.precond_module_name = None
+    if 'None' in args.ignore_module_name:
+        args.ignore_module_name = []
+
     return args, args_text
 
 
@@ -343,7 +367,8 @@ def main():
     # move model to GPU
     model.cuda()
 
-    optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args))
+    #optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args))
+    optimizer,grad_maker = asdl.create_grad_maker(model,args)
 
     # setup automatic mixed-precision (AMP) loss scaling and op casting
     amp_autocast = suppress  # do nothing
@@ -488,10 +513,11 @@ def main():
         # smoothing is handled with mixup target transform
         train_loss_fn = SoftTargetCrossEntropy().cuda()
     elif args.smoothing:
-        train_loss_fn = LabelSmoothingCrossEntropy(smoothing=args.smoothing).cuda()
+        train_loss_fn = nn.CrossEntropyLoss(label_smoothing=args.smoothing).cuda()
     else:
         train_loss_fn = nn.CrossEntropyLoss().cuda()
     validate_loss_fn = nn.CrossEntropyLoss().cuda()
+
 
     # setup checkpoint saver and eval metric tracking
     eval_metric = args.eval_metric
@@ -524,7 +550,8 @@ def main():
             train_metrics = train_one_epoch(
                 epoch, model, loader_train, optimizer, train_loss_fn, args,
                 lr_scheduler=lr_scheduler, saver=saver, output_dir=output_dir,
-                amp_autocast=amp_autocast, loss_scaler=loss_scaler, mixup_fn=mixup_fn)
+                amp_autocast=amp_autocast, loss_scaler=loss_scaler, mixup_fn=mixup_fn,
+                grad_maker=grad_maker)
 
             eval_metrics = validate(model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
 
@@ -562,7 +589,7 @@ def main():
 def train_one_epoch(
         epoch, model, loader, optimizer, loss_fn, args,
         lr_scheduler=None, saver=None, output_dir=None, amp_autocast=suppress,
-        loss_scaler=None, mixup_fn=None):
+        loss_scaler=None, mixup_fn=None, grad_maker=None):
 
     if args.mixup_off_epoch and epoch >= args.mixup_off_epoch:
         if args.prefetcher and loader.mixup_enabled:
@@ -588,27 +615,17 @@ def train_one_epoch(
             if mixup_fn is not None:
                 input, target = mixup_fn(input, target)
 
-        with amp_autocast():
-            output = model(input)
-            loss = loss_fn(output, target)
-
-        if not args.distributed:
-            losses_m.update(loss.item(), input.size(0))
-
         optimizer.zero_grad()
-        if loss_scaler is not None:
-            loss_scaler(
-                loss, optimizer,
-                clip_grad=args.clip_grad, clip_mode=args.clip_mode,
-                parameters=model_parameters(model, exclude_head='agc' in args.clip_mode),
-                create_graph=second_order)
-        else:
-            loss.backward(create_graph=second_order)
-            if args.clip_grad is not None:
-                dispatch_clip_grad(
-                    model_parameters(model, exclude_head='agc' in args.clip_mode),
-                    value=args.clip_grad, mode=args.clip_mode)
-            optimizer.step()
+        dummy_y = grad_maker.setup_model_call(model, input)
+        grad_maker.setup_loss_call(loss_fn, dummy_y, target)
+        y, loss = grad_maker.forward_and_backward()
+        if args.clip_grad is not None:
+            dispatch_clip_grad(
+                model_parameters(model, exclude_head='agc' in args.clip_mode),
+                value=args.clip_grad, mode=args.clip_mode)
+        optimizer.step()
+
+        losses_m.update(loss.item(), input.size(0))
 
         torch.cuda.synchronize()
         num_updates += 1

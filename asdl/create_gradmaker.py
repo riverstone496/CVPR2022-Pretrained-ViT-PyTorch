@@ -57,7 +57,8 @@ def create_grad_maker(model,args):
                                     preconditioner_upd_interval=args.curvature_update_interval,
                                     curvature_upd_interval=args.curvature_update_interval,
                                     precondition_modules=args.precond_module_name,
-                                    ignore_modules=(args.ignore_module_name)
+                                    ignore_modules=(args.ignore_module_name),
+                                    kl_clip=args.kl_clip
                                     )
 
     if args.optim == OPTIM_KFAC_MC or args.optim == OPTIM_KFAC_MC_ADAM:

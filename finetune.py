@@ -12,6 +12,7 @@ import argparse
 import time
 import yaml
 import os
+import sys
 import logging
 from collections import OrderedDict
 from contextlib import suppress
@@ -98,7 +99,7 @@ parser.add_argument('--std', type=float, nargs='+', default=None, metavar='STD',
                     help='Override std deviation of of dataset')
 parser.add_argument('--interpolation', default='', type=str, metavar='NAME',
                     help='Image resize interpolation type (overrides model)')
-parser.add_argument('-b', '--batch-size', type=int, default=64, metavar='N',
+parser.add_argument('-b', '--batch_size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 32)')
 parser.add_argument('-vb', '--validation-batch-size-multiplier', type=int, default=1, metavar='N',
                     help='ratio of validation batch size to training batch size (default: 1)')
@@ -114,9 +115,9 @@ parser.add_argument('--opt-betas', default=None, type=float, nargs='+', metavar=
                     help='Optimizer Betas (default: None, use opt default)')
 parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
                     help='Optimizer momentum (default: 0.9)')
-parser.add_argument('--weight-decay', type=float, default=0.01,
+parser.add_argument('--weight-decay', type=float, default=1e-4,
                     help='weight decay (default: 0.0001)')
-parser.add_argument('--clip-grad', type=float, default=None, metavar='NORM',
+parser.add_argument('--clip_grad', type=float, default=-1, metavar='NORM',
                     help='Clip gradient norm (default: None, no clipping)')
 parser.add_argument('--clip-mode', type=str, default='norm',
                     help='Gradient clipping mode. One of ("norm", "value", "agc")')
@@ -125,6 +126,8 @@ parser.add_argument('--clip-mode', type=str, default='norm',
 parser.add_argument('--sched', default='cosine_iter', type=str, metavar='SCHEDULER',
                     help='LR scheduler (default: "step"',)
 parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
+                    help='learning rate (default: 0.001)')
+parser.add_argument('--precond_lr', type=float, default=0.01, metavar='LR',
                     help='learning rate (default: 0.001)')
 parser.add_argument('--lr-noise', type=float, nargs='+', default=None, metavar='pct, pct',
                     help='learning rate noise on/off epoch percentages')
@@ -136,9 +139,7 @@ parser.add_argument('--lr-cycle-mul', type=float, default=1.0, metavar='MULT',
                     help='learning rate cycle len multiplier (default: 1.0)')
 parser.add_argument('--lr-cycle-limit', type=int, default=1, metavar='N',
                     help='learning rate cycle limit')
-parser.add_argument('--warmup-lr', type=float, default=0.0001, metavar='LR',
-                    help='warmup learning rate (default: 0.0001)')
-parser.add_argument('--min-lr', type=float, default=1e-5, metavar='LR',
+parser.add_argument('--lr-ratio', type=float, default=1e-2, metavar='LR',
                     help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
 parser.add_argument('--epochs', type=int, default=200, metavar='N',
                     help='number of epochs to train (default: 200)')
@@ -148,9 +149,9 @@ parser.add_argument('--start-epoch', default=None, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
 parser.add_argument('--decay-epochs', type=float, default=30, metavar='N',
                     help='epoch interval to decay LR')
-parser.add_argument('--warmup-epochs', type=int, default=5, metavar='N',
+parser.add_argument('--warmup_epochs', type=int, default=5, metavar='N',
                     help='epochs to warmup LR, if scheduler supports')
-parser.add_argument('--warmup-iter', type=int, default=0, metavar='N',
+parser.add_argument('--warmup_iter', type=int, default=0, metavar='N',
                     help='iter to warmup LR, if scheduler supports')
 parser.add_argument('--cooldown-epochs', type=int, default=0, metavar='N',
                     help='epochs to cooldown LR at min_lr, after cyclic schedule ends')
@@ -249,7 +250,7 @@ parser.add_argument('--experiment', default='', type=str, metavar='NAME',
                     help='name of train experiment, name of sub-folder for output')
 parser.add_argument('--eval-metric', default='top1', type=str, metavar='EVAL_METRIC',
                     help='Best metric (default: "top1"')
-parser.add_argument('--log_wandb', action='store_true', default=False,
+parser.add_argument('--log_wandb', action='store_false', default=True,
                     help='log training and validation metrics to wandb')
 parser.add_argument('--project-name', default='YOUR_WANDB_PPOJECT_NAME', type=str,
                     help='set wandb project name')
@@ -265,9 +266,11 @@ parser.add_argument('--precond_module_name', type=str, default='None',
 parser.add_argument('--ignore_module_name', type=str, default='None',
                         help='precond_module_name')
 parser.add_argument('--zero_initialization', action='store_true', default=False)
+parser.add_argument('--kl_clip', type=float, default=-1)
 
 def _parse_args():
     args = parser.parse_args()
+    print(args)
 
     # Cache the args as a text string to save them in the output dir later
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
@@ -286,8 +289,10 @@ def _parse_args():
             args.num_classes = 10
         if args.dataset == 'CIFAR100':
             args.num_classes = 100
+    args.min_lr = args.lr*args.lr_ratio
+    args.warmup_lr = args.lr*args.lr_ratio
+    print(args)
     return args, args_text
-
 
 def main():
     setup_default_logging()
@@ -539,7 +544,7 @@ def main():
             exp_name = args.experiment
         else:
             exp_name = '-'.join([
-                datetime.now().strftime("%Y%m%d-%H%M%S"),
+                str(datetime.now()),
                 safe_model_name(args.model),
                 str(data_config['input_size'][-1])
             ])
@@ -624,11 +629,14 @@ def train_one_epoch(
             if mixup_fn is not None:
                 input, target = mixup_fn(input, target)
 
+        lrl = [param_group['lr'] for param_group in optimizer.param_groups]
+        lr = sum(lrl) / len(lrl)
+
         optimizer.zero_grad()
         dummy_y = grad_maker.setup_model_call(model, input)
         grad_maker.setup_loss_call(loss_fn, dummy_y, target)
-        y, loss = grad_maker.forward_and_backward()
-        if args.clip_grad is not None:
+        y, loss = grad_maker.forward_and_backward(lr = lr)
+        if args.clip_grad != -1:
             dispatch_clip_grad(
                 model_parameters(model, exclude_head='agc' in args.clip_mode),
                 value=args.clip_grad, mode=args.clip_mode)
@@ -640,9 +648,6 @@ def train_one_epoch(
         num_updates += 1
         batch_time_m.update(time.time() - end)
         if last_batch or batch_idx % args.log_interval == 0:
-            lrl = [param_group['lr'] for param_group in optimizer.param_groups]
-            lr = sum(lrl) / len(lrl)
-
             if args.distributed:
                 reduced_loss = reduce_tensor(loss.data, args.world_size)
                 losses_m.update(reduced_loss.item(), input.size(0))
@@ -677,6 +682,10 @@ def train_one_epoch(
                         os.path.join(output_dir, 'train-batch-%d.jpg' % batch_idx),
                         padding=0,
                         normalize=True)
+                
+                if math.isnan(loss):
+                    print('Error: Train loss is nan', file=sys.stderr)
+                    sys.exit(0)
 
         if saver is not None and args.recovery_interval and (
                 last_batch or (batch_idx + 1) % args.recovery_interval == 0):

@@ -44,6 +44,8 @@ class PreconditioningConfig:
     optimizer: torch.optim = None
     grafting: str = None
     norm_shrink: bool = False
+    kl_clip: float = -1
+    lr: float = -1
 
 class PreconditionedGradientMaker(GradientMaker):
     _supported_classes = None
@@ -128,7 +130,7 @@ class PreconditionedGradientMaker(GradientMaker):
     def load_state_dict(self, state_dict: dict):
         self.state['step'] = state_dict['step']
 
-    def forward_and_backward(self):
+    def forward_and_backward(self,lr=-1):
         step = self.state['step']
 
         self._startup()
@@ -147,7 +149,15 @@ class PreconditionedGradientMaker(GradientMaker):
         if self.config.norm_shrink:
             self.save_norm()
 
+        if self.config.kl_clip != -1:
+            grad = torch.nn.utils.parameters_to_vector([p.grad for p in self.module_dict.parameters()]) 
         self.precondition()
+        if self.config.kl_clip != -1:
+            ng = torch.nn.utils.parameters_to_vector([p.grad for p in self.module_dict.parameters()])
+            vg_sum = ((ng * grad).sum() * lr**2).item()
+            nu = min(1.0, (self.config.kl_clip / abs(vg_sum))**0.5)
+            for p in self.module_dict.parameters():
+                p.grad.data *= nu
 
         if self.config.norm_shrink:
             self.adjust_norm()

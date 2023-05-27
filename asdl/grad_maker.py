@@ -208,7 +208,6 @@ class GradientMaker:
 
         reduction = self._loss_reduction
         if reduction is not None:
-            print(self._loss_fn)
             if not has_reduction(self._loss_fn):
                 raise AttributeError('loss_fn has to have "reduction" option')
             if isinstance(self._loss_fn, nn.Module):

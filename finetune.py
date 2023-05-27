@@ -26,7 +26,9 @@ from torch.nn.parallel import DistributedDataParallel as NativeDDP
 from timm.data import create_dataset, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
 from timm.models import resume_checkpoint, load_checkpoint, convert_splitbn_model, model_parameters
 from timm.utils import *
-from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy, JsdCrossEntropy
+from timm.loss import LabelSmoothingCrossEntropy, JsdCrossEntropy
+from utils.loss import  SoftTargetCrossEntropy
+
 from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.utils import ApexScaler, NativeScaler
 

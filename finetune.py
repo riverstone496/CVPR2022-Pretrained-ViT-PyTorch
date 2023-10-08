@@ -632,7 +632,7 @@ def train_one_epoch(
         lrl = [param_group['lr'] for param_group in optimizer.param_groups]
         lr = sum(lrl) / len(lrl)
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         dummy_y = grad_maker.setup_model_call(model, input)
         grad_maker.setup_loss_call(loss_fn, dummy_y, target)
         y, loss = grad_maker.forward_and_backward(lr = lr)

@@ -37,7 +37,7 @@ from data.loader import create_loader, create_transform_webdataset
 from models.factory import create_model, safe_model_name
 from scheduler.scheduler_factory import create_scheduler
 from utils.summary import original_update_summary
-
+from optimizer.shampoo import ShampooHyperParams, Shampoo, LayerwiseGrafting
 
 def print0(message):
     if dist.is_initialized():
@@ -265,6 +265,15 @@ parser.add_argument('--project-name', default='YOUR_WANDB_PPOJECT_NAME', type=st
 parser.add_argument('--group-name', default='YOUR_WANDB_GROUP_NAME', type=str,
                     help='set wandb group name')
 
+# shampoo
+parser.add_argument('--beta2', default=0.85, type=float)
+parser.add_argument('--matrix_eps', default=1.0e-6, type=float)
+parser.add_argument('--start_preconditioning_step', default=25, type=int)
+parser.add_argument('--preconditioning_compute_steps', default=10, type=int)
+parser.add_argument('--statistics_compute_steps', default=100, type=int)
+parser.add_argument('--shampoo_block_size', default=128, type=int)
+parser.add_argument('--gradient_value_clip', default=-1, type=float)
+parser.add_argument('--grafting', default='AdaGrad', type=str, choices=['None', 'SGD', 'AdaGrad'])
 
 def _parse_args():
     args = parser.parse_args()
@@ -358,7 +367,24 @@ def main():
     # move model to GPU
     model.cuda()
 
-    optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args))
+    if args.opt == 'shampoo':
+        if args.grafting == 'AdaGrad':
+            grafting = LayerwiseGrafting.ADAGRAD
+        elif args.grafting == 'SGD':
+            grafting = LayerwiseGrafting.SGD
+        elif args.grafting == 'None':
+            grafting = LayerwiseGrafting.NONE
+        hyperparams = ShampooHyperParams(beta2 = args.beta2,
+                                        matrix_eps = args.matrix_eps, 
+                                        start_preconditioning_step = args.start_preconditioning_step,
+                                        preconditioning_compute_steps = args.preconditioning_compute_steps,
+                                        statistics_compute_steps = args.statistics_compute_steps,
+                                        block_size = args.shampoo_block_size,
+                                        gradient_value_clip=args.gradient_value_clip,
+                                        graft_type=grafting)
+        optimizer = Shampoo(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay ,hyperparams=hyperparams)
+    else:
+        optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args))
 
     # setup automatic mixed-precision (AMP) loss scaling and op casting
     amp_autocast = suppress  # do nothing
